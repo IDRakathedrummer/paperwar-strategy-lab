@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Any
 from datetime import datetime
-import sqlite3, json, os
+import sqlite3, json, os, time
 
 router = APIRouter(prefix="/matches", tags=["matches"])
 
@@ -112,7 +112,6 @@ def match_end(body: MatchEnd):
             body.match_id,
         )
     )
-    # Batch-insert any buffered events that weren't already streamed
     for ev in body.events:
         con.execute(
             "INSERT OR IGNORE INTO events (match_id, t, type, data) VALUES (?,?,?,?)",
@@ -126,7 +125,6 @@ def match_end(body: MatchEnd):
 @router.post("/")
 def create_match(match: MatchCreate):
     """Manual match entry from the dashboard form."""
-    import time
     match_id = f"manual_{int(time.time() * 1000)}"
     con = get_db()
     con.execute(
@@ -157,6 +155,17 @@ def list_matches():
     ).fetchall()
     con.close()
     return {"matches": [dict(r) for r in rows]}
+
+
+@router.get("/{match_id}/events")
+def match_events(match_id: str):
+    """Get all events for a specific match, ordered by time."""
+    con = get_db()
+    rows = con.execute(
+        "SELECT * FROM events WHERE match_id=? ORDER BY t ASC", (match_id,)
+    ).fetchall()
+    con.close()
+    return {"match_id": match_id, "events": [dict(r) for r in rows]}
 
 
 @router.get("/{match_id}")
