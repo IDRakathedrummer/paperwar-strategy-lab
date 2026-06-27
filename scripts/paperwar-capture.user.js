@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PaperWar Strategy Lab - Auto Capture
 // @namespace    paperwar-strategy-lab
-// @version      2.8
+// @version      2.9
 // @description  Full match recorder: real DOM selectors + click-intercepted build/transport events
 // @author       paperwar-strategy-lab
 // @match        http://paper.hosted-by-fern.host:*/*
@@ -25,9 +25,22 @@
   let prevTech = null;
   let lastSnapshotAt = 0;
   let startTs = null;
-  let bridgeWarnedOnce = false;
 
   function relT() { return startTs ? ((Date.now() - startTs) / 1000) : 0; }
+
+  // ─── BRIDGE DETECTION ──────────────────────────────────────────────────────
+  // Defer the check by 2s so the content script always has time to set
+  // window.__pwBridgeReady before we evaluate it. Both scripts run at
+  // document-idle and the race is otherwise non-deterministic.
+  setTimeout(() => {
+    if (!window.__pwBridgeReady) {
+      console.warn(
+        '[PW-Capture] Bridge extension not detected. ' +
+        'Load extension/ in chrome://extensions (Developer mode) ' +
+        'to enable backend communication.'
+      );
+    }
+  }, 2000);
 
   // ─── DOM READERS ───────────────────────────────────────────────────────────
   function txt(sel) { const e = document.querySelector(sel); return e ? e.innerText.trim() : null; }
@@ -84,26 +97,13 @@
   }
 
   // ─── API TRANSPORT ────────────────────────────────────────────────────────
-  // Chrome's Private Network Access policy hard-blocks HTTP public origins
-  // from fetching loopback. We route through a companion Chrome extension
-  // (extension/) that posts from a secure extension context instead.
-  // The extension content script listens for PW_CAPTURE_POST postMessages.
+  // Routes through the companion Chrome extension bridge to bypass
+  // Chrome's Private Network Access block on HTTP public → loopback.
   function post(endpoint, payload) {
     window.postMessage(
       { type: 'PW_CAPTURE_POST', endpoint, payload },
       '*'
     );
-
-    // Warn once if the bridge extension doesn't appear to be installed.
-    // The extension injects a flag on the window when its content script runs.
-    if (!window.__pwBridgeReady && !bridgeWarnedOnce) {
-      bridgeWarnedOnce = true;
-      console.warn(
-        '[PW-Capture] Bridge extension not detected. ' +
-        'Load extension/ in chrome://extensions (Developer mode) ' +
-        'to enable backend communication.'
-      );
-    }
   }
 
   // ─── EVENT HELPERS ────────────────────────────────────────────────────────
@@ -228,7 +228,7 @@
   }
 
   setInterval(poll, POLL_MS);
-  console.log('[PW-Capture] v2.8 loaded. Backend:', API);
+  console.log('[PW-Capture] v2.9 loaded. Backend:', API);
 
   // ─── STATUS BADGE ─────────────────────────────────────────────────────────
   const badge = document.createElement('div');
