@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PaperWar Strategy Lab - Auto Capture
 // @namespace    paperwar-strategy-lab
-// @version      2.6
+// @version      2.7
 // @description  Full match recorder: real DOM selectors + click-intercepted build/transport events
 // @author       paperwar-strategy-lab
 // @match        http://paper.hosted-by-fern.host:*/*
@@ -40,7 +40,7 @@
   function getOwnedTech() {
     return {
       owned: all('.technode.owned .tn-nm'),
-      poor: all('.technode.poor .tn-nm'),
+      poor:  all('.technode.poor .tn-nm'),
       locked: all('.technode.locked .tn-nm'),
     };
   }
@@ -59,10 +59,9 @@
   function getAmmo() { return all('.aminkrow'); }
 
   // ─── PHASE DETECTION ──────────────────────────────────────────────────────
-  // The game keeps all section elements in the DOM at all times — only
-  // toggling a display:none ancestor. querySelector presence alone is
-  // therefore unreliable. Instead we use getInk() as the primary truth
-  // signal: ink is only readable when a match is actually running.
+  // The game keeps all sections in the DOM at all times, toggling a
+  // display:none ancestor. Use getInk() as the primary truth signal —
+  // ink is only readable when a match is actually running.
   function getPhase() {
     if (document.querySelector('.hpbar') && getInk() !== null)  return 'match';
     if (document.querySelector('.rc-head'))                      return 'result';
@@ -72,16 +71,16 @@
   }
 
   function getResult() {
-    const head = txt('.rc-head');
+    const head  = txt('.rc-head');
     const label = txt('.rc-label');
-    const sub = txt('.rc-sub');
+    const sub   = txt('.rc-sub');
     return head ? { head, label, sub } : null;
   }
 
   function getLobbyConfig() {
     return {
-      seed: txt('.seedin'),
-      pills: all('.pillrow.mtpills .cs-val'),
+      seed:    txt('.seedin'),
+      pills:   all('.pillrow.mtpills .cs-val'),
       cfgSecs: all('.cfgsec-hd'),
     };
   }
@@ -112,8 +111,6 @@
     matchId = `match_${Date.now()}`;
     startTs = Date.now();
     eventBuffer = [];
-    prevInk = null;
-    prevTech = null;
     lastSnapshotAt = 0;
 
     console.log('[PW-Capture] Match START:', matchId);
@@ -121,6 +118,20 @@
       match_id: matchId,
       timestamp: startTs,
       config,
+    });
+
+    // Seed prevInk/prevTech and record initial snapshot immediately
+    // so REC shows non-zero events and future diffs are correct.
+    const ink  = getInk();
+    const tech = getOwnedTech();
+    prevInk  = ink;
+    prevTech = tech;
+    recordEvent('match_start_snapshot', {
+      ink,
+      tech,
+      units: getUnits(),
+      hp:    getHP(),
+      ammo:  getAmmo(),
     });
 
     document.addEventListener('click', onDocumentClick, true);
@@ -131,19 +142,19 @@
     document.removeEventListener('click', onDocumentClick, true);
 
     recordEvent('match_end_snapshot', {
-      ink: getInk(),
-      tech: getOwnedTech(),
+      ink:   getInk(),
+      tech:  getOwnedTech(),
       units: getUnits(),
-      hp: getHP(),
-      ammo: getAmmo(),
+      hp:    getHP(),
+      ammo:  getAmmo(),
     });
 
     console.log('[PW-Capture] Match END:', result);
     post('/api/matches/end', {
-      match_id: matchId,
+      match_id:  matchId,
       timestamp: Date.now(),
-      result: result || { head: 'unknown', label: null, sub: null },
-      events: eventBuffer,
+      result:    result || { head: 'unknown', label: null, sub: null },
+      events:    eventBuffer,
     });
 
     matchId = null;
@@ -167,12 +178,12 @@
 
     const sig = (btn.className || '') + ' ' + label;
     let type = 'ui_click';
-    if (/unlock|technode/i.test(sig)) type = 'tech_unlock';
-    else if (/transport|load|drop|carrier|naval/i.test(sig)) type = 'transport';
+    if (/unlock|technode/i.test(sig))                              type = 'tech_unlock';
+    else if (/transport|load|drop|carrier|naval/i.test(sig))      type = 'transport';
     else if (/build|produce|queue|spawn|place|airport|factory/i.test(sig)) type = 'build';
 
     if (type !== 'tech_unlock') recordEvent(type, { entity: label });
-    else recordEvent(type, { entity: label, via: 'click' });
+    else                        recordEvent(type, { entity: label, via: 'click' });
   }
 
   // ─── POLL LOOP ────────────────────────────────────────────────────────────
@@ -181,13 +192,15 @@
 
     if (phase !== lastPhase) {
       console.log(`[PW-Capture] Phase: ${lastPhase} → ${phase}`);
-      if (phase === 'match' && lastPhase === 'lobby') onMatchStart(getLobbyConfig());
+      // Start recording whenever we enter match and aren't already recording,
+      // regardless of which phase we came from (handles missed lobby transition).
+      if (phase === 'match' && !matchId)              onMatchStart(getLobbyConfig());
       if (phase === 'result' && lastPhase === 'match') onMatchEnd(getResult());
       lastPhase = phase;
     }
 
     if (phase === 'match' && matchId) {
-      const ink = getInk();
+      const ink  = getInk();
       const tech = getOwnedTech();
 
       if (ink !== null && ink !== prevInk) {
@@ -209,7 +222,7 @@
   }
 
   setInterval(poll, POLL_MS);
-  console.log('[PW-Capture] v2.6 loaded. Backend:', API);
+  console.log('[PW-Capture] v2.7 loaded. Backend:', API);
 
   // ─── STATUS BADGE ─────────────────────────────────────────────────────────
   const badge = document.createElement('div');
