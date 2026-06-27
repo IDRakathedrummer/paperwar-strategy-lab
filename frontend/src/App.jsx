@@ -1,7 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react'
 
 const NAV = ['Dashboard', 'Matches', 'Analysis', 'Recommendations', 'Automation']
-const API = '/'
+// All FastAPI routes sit under /api (routes.py prefix) — /health lives at root
+const API = 'http://localhost:8000/api/'
+const HEALTH_URL = 'http://localhost:8000/health'
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
 
 function StatCard({ label, value, tone = 'default', subtext }) {
   return (
@@ -45,19 +49,46 @@ function getWinRate(matches) {
   return Math.round((wins / matches.length) * 100)
 }
 
-function groupBy(matches, getKey) {
-  const map = new Map()
-  matches.forEach(match => {
-    const key = getKey(match) || 'Unknown'
-    const entry = map.get(key) || { key, total: 0, wins: 0 }
-    entry.total += 1
-    if (inferMatchResult(match) === 'Win') entry.wins += 1
-    map.set(key, entry)
-  })
-  return [...map.values()]
-    .map(entry => ({ ...entry, rate: entry.total ? Math.round((entry.wins / entry.total) * 100) : 0 }))
-    .sort((a, b) => b.rate - a.rate || b.total - a.total)
+// Decode a raw event row — data column is a JSON string written by the backend's ingest_event()
+// Mirrors every recordEvent() call shape in the userscript v2.0
+function decodeEvent(event) {
+  let payload = {}
+  if (event.data) {
+    try { payload = JSON.parse(event.data) } catch { payload = {} }
+  }
+
+  const type = event.type || 'event'
+  const t = event.t ?? '—'
+  const matchShort = event.match_id ? `…${event.match_id.slice(-10)}` : 'unknown'
+
+  let detail = ''
+  if (type === 'ink_change') {
+    detail = `${payload.prev ?? '?'} → ${payload.ink ?? '?'} ink`
+  } else if (type === 'tech_unlock') {
+    detail = payload.name || payload.entity || ''
+    if (payload.via) detail += ` (${payload.via})`
+  } else if (type === 'build' || type === 'ui_click') {
+    detail = payload.entity || ''
+  } else if (type === 'transport') {
+    detail = payload.entity || ''
+  } else if (type === 'snapshot') {
+    const ownedCount = payload.tech?.owned?.length ?? 0
+    const unitCount = payload.units?.length ?? 0
+    detail = `${payload.ink ?? '?'} ink · ${ownedCount} tech · ${unitCount} units`
+  } else if (type === 'match_end_snapshot') {
+    const ownedCount = payload.tech?.owned?.length ?? 0
+    detail = `final: ${payload.ink ?? '?'} ink · ${ownedCount} tech unlocked`
+  } else if (type === 'match_end') {
+    detail = payload.result?.head || ''
+  }
+
+  // Colour key: first segment of underscore-split type name
+  const tagKey = type.split('_')[0]
+
+  return { type, t, matchShort, detail, tagKey }
 }
+
+// ─── PANELS ───────────────────────────────────────────────────────────────────
 
 function DashboardPanel({ matches, analysis, recentEvents, refresh }) {
   const totalMatches = matches.length
@@ -71,20 +102,30 @@ function DashboardPanel({ matches, analysis, recentEvents, refresh }) {
     <div className="panel-stack">
       <div className="hero-card card">
         <div>
-          <div className="eyebrow">Live sync from FastAPI + userscript</div>
+          <div className="eyebrow">Live sync — FastAPI + Tampermonkey userscript</div>
           <h2>PaperWar match intelligence</h2>
           <p className="muted">
-            This dashboard reads directly from your backend so you can review captured matches,
-            inspect analysis endpoints, and verify that live userscript events are flowing into the API.
+            Match data flows: in-game userscript → POST /api/events &amp; /api/matches/end →
+            FastAPI → this dashboard. The event stream shows decoded payloads from the most
+            recent recorded match.
           </p>
         </div>
         <button className="action-btn" onClick={refresh}>Refresh data</button>
       </div>
 
       <div className="stats-grid">
-        <StatCard label="Total matches" value={totalMatches} subtext="Last 100 from /matches" />
-        <StatCard label="Win rate" value={`${winRate}%`} tone={winRate >= 50 ? 'good' : 'bad'} subtext="Derived from recorded results" />
-        <StatCard label="Average duration" value={avgDuration ? formatDuration(avgDuration) : '—'} subtext="Based on duration_seconds" />
+        <StatCard label="Total matches" value={totalMatches} subtext="GET /api/matches/" />
+        <StatCard
+          label="Win rate"
+          value={`${winRate}%`}
+          tone={winRate >= 50 ? 'good' : 'bad'}
+          subtext="Inferred from result_head field"
+        />
+        <StatCard
+          label="Avg duration"
+          value={avgDuration ? formatDuration(avgDuration) : '—'}
+          subtext="From duration_seconds column"
+        />
         <StatCard
           label="Latest result"
           value={latestMatch ? inferMatchResult(latestMatch) : '—'}
@@ -100,7 +141,10 @@ function DashboardPanel({ matches, analysis, recentEvents, refresh }) {
             <span>{matches.length} loaded</span>
           </div>
           {!matches.length ? (
-            <EmptyState title="No recorded matches" text="Start a game with the userscript running or add one manually from the Matches tab." />
+            <EmptyState
+              title="No recorded matches"
+              text="Start a game with the userscript running — it will POST /api/matches/start and /api/matches/end automatically."
+            />
           ) : (
             <div className="list-stack compact-list">
               {matches.slice(0, 6).map(match => (
@@ -108,10 +152,12 @@ function DashboardPanel({ matches, analysis, recentEvents, refresh }) {
                   <div>
                     <div className="list-title">{match.map_name || 'Unknown map'}</div>
                     <div className="list-meta">
-                      {inferMatchResult(match)} · {formatDuration(match.duration_seconds)} · {match.enemy_style || 'Unknown enemy style'}
+                      {inferMatchResult(match)} · {formatDuration(match.duration_seconds)} · {match.enemy_style || 'No enemy style'}
                     </div>
                   </div>
-                  <div className={`badge ${inferMatchResult(match) === 'Win' ? 'good' : 'bad'}`}>{inferMatchResult(match)}</div>
+                  <div className={`badge ${inferMatchResult(match) === 'Win' ? 'good' : 'bad'}`}>
+                    {inferMatchResult(match)}
+                  </div>
                 </article>
               ))}
             </div>
@@ -120,21 +166,30 @@ function DashboardPanel({ matches, analysis, recentEvents, refresh }) {
 
         <section className="card">
           <div className="section-head">
-            <h3>Live event stream</h3>
-            <span>/events + /matches/end</span>
+            <h3>Event stream — latest match</h3>
+            <span>GET /api/events/{'{match_id}'}</span>
           </div>
           {!recentEvents.length ? (
-            <EmptyState title="No events yet" text="Events appear here after the userscript starts posting build, transport, snapshot, and tech events." />
+            <EmptyState
+              title="No events yet"
+              text="Once the userscript runs a match, decoded build, tech, transport, ink, and snapshot events will appear here."
+            />
           ) : (
-            <div className="list-stack compact-list mono-list">
-              {recentEvents.slice(0, 8).map((event, idx) => (
-                <article className="list-item" key={`${event.id || idx}-${event.type || 'event'}`}>
-                  <div>
-                    <div className="list-title mono">{event.type || 'event'}</div>
-                    <div className="list-meta">t={event.t ?? '—'}s · {event.match_id || 'unknown match'}</div>
-                  </div>
-                </article>
-              ))}
+            <div className="list-stack compact-list">
+              {recentEvents.slice(0, 10).map((event, idx) => {
+                const { type, t, matchShort, detail, tagKey } = decodeEvent(event)
+                return (
+                  <article className="list-item event-item" key={`${event.id || idx}-${type}`}>
+                    <div className="event-type-col">
+                      <span className={`event-tag event-tag--${tagKey}`}>{type}</span>
+                    </div>
+                    <div className="event-body">
+                      <div className="list-title mono">{detail || '—'}</div>
+                      <div className="list-meta">t={t}s · {matchShort}</div>
+                    </div>
+                  </article>
+                )
+              })}
             </div>
           )}
         </section>
@@ -144,10 +199,10 @@ function DashboardPanel({ matches, analysis, recentEvents, refresh }) {
         <section className="card">
           <div className="section-head">
             <h3>Matchup summary</h3>
-            <span>/analysis/matchup-summary</span>
+            <span>GET /api/analysis/matchup-summary</span>
           </div>
           {!analysis.matchupSummary.length ? (
-            <EmptyState title="No matchup summary" text="Enemy-style aggregation appears here once enough matches are recorded." />
+            <EmptyState title="No matchup data" text="Populate enemy_style on match records and this table will show per-style win rates." />
           ) : (
             <div className="list-stack">
               {analysis.matchupSummary.map(row => (
@@ -166,17 +221,17 @@ function DashboardPanel({ matches, analysis, recentEvents, refresh }) {
         <section className="card">
           <div className="section-head">
             <h3>Transport timing</h3>
-            <span>/analysis/transport-timing</span>
+            <span>GET /api/analysis/transport-timing</span>
           </div>
           {!analysis.transportWindows.length ? (
-            <EmptyState title="No winning transport launches" text="This fills when winning matches contain transport_launched events from the userscript." />
+            <EmptyState title="No winning transport launches" text="Appears when winning matches contain transport events from the userscript click interceptor." />
           ) : (
             <div className="list-stack compact-list mono-list">
               {analysis.transportWindows.slice(0, 8).map((row, idx) => (
                 <article className="list-item" key={`${row.match_id}-${row.t}-${idx}`}>
                   <div>
-                    <div className="list-title mono">match {row.match_id}</div>
-                    <div className="list-meta">transport launch at {row.t}s</div>
+                    <div className="list-title mono">{row.match_id}</div>
+                    <div className="list-meta">transport at t={row.t}s</div>
                   </div>
                 </article>
               ))}
@@ -208,7 +263,7 @@ function MatchesPanel({ matches, onCreateMatch, creating }) {
       <section className="card">
         <div className="section-head">
           <h3>Manual match entry</h3>
-          <span>POST /matches/</span>
+          <span>POST /api/matches/</span>
         </div>
         <form className="form-grid" onSubmit={handleSubmit}>
           <label>
@@ -229,20 +284,22 @@ function MatchesPanel({ matches, onCreateMatch, creating }) {
           </label>
           <label>
             <span>Enemy style</span>
-            <input value={form.enemy_style} onChange={e => setForm({ ...form, enemy_style: e.target.value })} placeholder="Aggro, Naval, Turtle..." />
+            <input value={form.enemy_style} onChange={e => setForm({ ...form, enemy_style: e.target.value })} placeholder="Aggro, Naval, Turtle…" />
           </label>
           <label className="full-span">
             <span>Notes</span>
             <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="What happened in this game?" rows={5} />
           </label>
-          <button className="action-btn" type="submit" disabled={creating}>{creating ? 'Saving…' : 'Create match'}</button>
+          <button className="action-btn" type="submit" disabled={creating}>
+            {creating ? 'Saving…' : 'Create match'}
+          </button>
         </form>
       </section>
 
       <section className="card">
         <div className="section-head">
           <h3>Recorded matches</h3>
-          <span>GET /matches/</span>
+          <span>GET /api/matches/</span>
         </div>
         {!matches.length ? (
           <EmptyState title="No matches stored" text="Use the userscript or the form on the left to populate the backend." />
@@ -261,9 +318,13 @@ function MatchesPanel({ matches, onCreateMatch, creating }) {
               <tbody>
                 {matches.map(match => (
                   <tr key={match.id}>
-                    <td className="mono truncate-cell">{match.id}</td>
+                    <td className="mono truncate-cell" title={match.id}>{match.id}</td>
                     <td>{match.map_name || '—'}</td>
-                    <td><span className={`badge ${inferMatchResult(match) === 'Win' ? 'good' : inferMatchResult(match) === 'Loss' ? 'bad' : ''}`}>{inferMatchResult(match)}</span></td>
+                    <td>
+                      <span className={`badge ${inferMatchResult(match) === 'Win' ? 'good' : inferMatchResult(match) === 'Loss' ? 'bad' : ''}`}>
+                        {inferMatchResult(match)}
+                      </span>
+                    </td>
                     <td>{formatDuration(match.duration_seconds)}</td>
                     <td>{match.enemy_style || '—'}</td>
                   </tr>
@@ -283,10 +344,13 @@ function AnalysisPanel({ analysis }) {
       <section className="card">
         <div className="section-head">
           <h3>Win rates by result head</h3>
-          <span>GET /analysis/win-rates</span>
+          <span>GET /api/analysis/win-rates</span>
         </div>
         {!analysis.winRates.length ? (
-          <EmptyState title="No win-rate data" text="This endpoint groups matches by result_head, so it improves as captured matches include real result screen labels." />
+          <EmptyState
+            title="No win-rate data"
+            text="Groups matches by result_head — the raw label the userscript reads from .rc-head on the result screen."
+          />
         ) : (
           <div className="list-stack">
             {analysis.winRates.map(row => (
@@ -305,10 +369,13 @@ function AnalysisPanel({ analysis }) {
       <section className="card">
         <div className="section-head">
           <h3>Winning transport windows</h3>
-          <span>GET /analysis/transport-timing</span>
+          <span>GET /api/analysis/transport-timing</span>
         </div>
         {!analysis.transportWindows.length ? (
-          <EmptyState title="No transport windows yet" text="Once the userscript records transport_launched events in winning matches, they will be listed here." />
+          <EmptyState
+            title="No transport windows yet"
+            text="The userscript click interceptor fires a 'transport' event on transport/naval/carrier clicks. These appear here in winning matches."
+          />
         ) : (
           <div className="table-wrap">
             <table>
@@ -316,16 +383,16 @@ function AnalysisPanel({ analysis }) {
                 <tr>
                   <th>Match</th>
                   <th>Time</th>
-                  <th>Payload</th>
+                  <th>Entity</th>
                 </tr>
               </thead>
               <tbody>
                 {analysis.transportWindows.map((row, idx) => {
-                  let parsed = null
-                  try { parsed = row.data ? JSON.parse(row.data) : null } catch { parsed = null }
+                  let parsed = {}
+                  try { parsed = row.data ? JSON.parse(row.data) : {} } catch { parsed = {} }
                   return (
                     <tr key={`${row.match_id}-${idx}`}>
-                      <td className="mono truncate-cell">{row.match_id}</td>
+                      <td className="mono truncate-cell" title={row.match_id}>{row.match_id}</td>
                       <td>{row.t}s</td>
                       <td>{parsed?.entity || parsed?.name || '—'}</td>
                     </tr>
@@ -340,10 +407,13 @@ function AnalysisPanel({ analysis }) {
       <section className="card full-width-card">
         <div className="section-head">
           <h3>Enemy style matchup summary</h3>
-          <span>GET /analysis/matchup-summary</span>
+          <span>GET /api/analysis/matchup-summary</span>
         </div>
         {!analysis.matchupSummary.length ? (
-          <EmptyState title="No matchup summary yet" text="Add manual enemy_style values or let captured matches be enriched later to make this panel more useful." />
+          <EmptyState
+            title="No matchup summary yet"
+            text="Fill enemy_style on your match records — manually or via a future enrichment step — and this table will group win rates per strategy."
+          />
         ) : (
           <div className="table-wrap">
             <table>
@@ -374,6 +444,7 @@ function AnalysisPanel({ analysis }) {
 }
 
 function RecommendationsPanel({ recommendation, loading, refresh }) {
+  // Shape mirrors what the userscript collects during a match (tech, units, ink, elapsed)
   const sampleState = {
     elapsed_seconds: 360,
     current_tech: ['Lt. Infantry', 'AKM', 'Scout'],
@@ -387,26 +458,28 @@ function RecommendationsPanel({ recommendation, loading, refresh }) {
       <section className="card">
         <div className="section-head">
           <h3>Live recommendation probe</h3>
-          <span>POST /recommendations/live</span>
+          <span>POST /api/recommendations/live</span>
         </div>
         <p className="muted">
-          The backend currently returns a placeholder recommendation. This panel verifies the endpoint,
-          shows the JSON response, and gives you a place to extend the live decision engine next.
+          Sends a sample game state to the live recommendation endpoint and displays the raw
+          JSON response. Extend the backend logic there to return real suggestions based on
+          historical win patterns from the event and match stores.
         </p>
         <div className="action-row">
           <button className="action-btn" onClick={() => refresh(sampleState)} disabled={loading}>
             {loading ? 'Requesting…' : 'Request recommendation'}
           </button>
         </div>
+        <pre className="json-block sample-block">{JSON.stringify(sampleState, null, 2)}</pre>
       </section>
 
       <section className="card">
         <div className="section-head">
-          <h3>Current response</h3>
-          <span>Backend output</span>
+          <h3>Backend response</h3>
+          <span>Raw JSON</span>
         </div>
         {!recommendation ? (
-          <EmptyState title="No recommendation fetched" text="Click the button above to call the live recommendation endpoint with a sample game state." />
+          <EmptyState title="No recommendation fetched" text="Click the button above to probe the endpoint." />
         ) : (
           <pre className="json-block">{JSON.stringify(recommendation, null, 2)}</pre>
         )}
@@ -424,17 +497,24 @@ function AutomationPanel() {
           <span>Manual-gated only</span>
         </div>
         <p className="muted">
-          Keep automation behind explicit user actions. The userscript should capture state continuously,
-          while any build-order helper or transport macro should remain off by default and require a deliberate trigger.
+          Keep automation behind explicit user actions. The userscript captures state continuously
+          and posts events; any build-order helper or transport macro should stay off by default
+          and require a deliberate trigger from this tab.
         </p>
         <div className="callout-grid">
           <div className="callout good">
             <h4>Good next step</h4>
-            <p>Expose a backend endpoint for candidate macro plans, then bind a user-confirmed button in this tab.</p>
+            <p>
+              Add a <code>/api/automation/plan</code> endpoint that returns a recommended build order
+              based on match history, then wire a confirm button here that the player triggers manually.
+            </p>
           </div>
           <div className="callout bad">
             <h4>Not ready yet</h4>
-            <p>Continuous autonomous play logic. Your backend and frontend are currently structured for analysis first, automation second.</p>
+            <p>
+              Continuous autonomous play. The analysis layer needs to mature — transport timing
+              patterns and tech unlock win-rate correlations — before automation is meaningful.
+            </p>
           </div>
         </div>
       </section>
@@ -442,25 +522,24 @@ function AutomationPanel() {
   )
 }
 
+// ─── ROOT ─────────────────────────────────────────────────────────────────────
+
 export default function App() {
   const [tab, setTab] = useState('Dashboard')
   const [health, setHealth] = useState(null)
   const [matches, setMatches] = useState([])
-  const [analysis, setAnalysis] = useState({
-    winRates: [],
-    transportWindows: [],
-    matchupSummary: [],
-  })
+  const [analysis, setAnalysis] = useState({ winRates: [], transportWindows: [], matchupSummary: [] })
   const [recentEvents, setRecentEvents] = useState([])
   const [recommendation, setRecommendation] = useState(null)
   const [loading, setLoading] = useState({ data: false, recommendation: false, creating: false })
   const [error, setError] = useState('')
 
+  // fetchJSON prepends the /api/ base — so fetchJSON('matches/') hits /api/matches/
   const fetchJSON = async (path, options) => {
     const res = await fetch(`${API}${path}`, options)
     if (!res.ok) {
       const text = await res.text()
-      throw new Error(text || `Request failed: ${res.status}`)
+      throw new Error(text || `HTTP ${res.status} — ${path}`)
     }
     return res.json()
   }
@@ -470,7 +549,7 @@ export default function App() {
     setError('')
     try {
       const [healthRes, matchesRes, winRatesRes, transportRes, matchupRes] = await Promise.all([
-        fetchJSON('health'),
+        fetch(HEALTH_URL).then(r => r.json()),   // /health is NOT under /api
         fetchJSON('matches/'),
         fetchJSON('analysis/win-rates'),
         fetchJSON('analysis/transport-timing'),
@@ -486,10 +565,11 @@ export default function App() {
         matchupSummary: matchupRes.matchup_summary || [],
       })
 
-      const matchWithEvents = loadedMatches.find(Boolean)
-      if (matchWithEvents?.id) {
+      // index 0 = most recent match (backend returns newest-first)
+      const latestMatch = loadedMatches[0]
+      if (latestMatch?.id) {
         try {
-          const eventsRes = await fetchJSON(`events/${matchWithEvents.id}`)
+          const eventsRes = await fetchJSON(`events/${latestMatch.id}`)
           setRecentEvents(eventsRes.events || [])
         } catch {
           setRecentEvents([])
@@ -499,15 +579,13 @@ export default function App() {
       }
     } catch (err) {
       setHealth('offline')
-      setError(err.message || 'Failed to load backend data.')
+      setError(err.message || 'Could not reach backend — is the FastAPI server running on port 8000?')
     } finally {
       setLoading(prev => ({ ...prev, data: false }))
     }
   }
 
-  useEffect(() => {
-    refreshData()
-  }, [])
+  useEffect(() => { refreshData() }, [])
 
   const createMatch = async (payload) => {
     setLoading(prev => ({ ...prev, creating: true }))
@@ -574,9 +652,7 @@ export default function App() {
               key={n}
               className={`nav-btn${tab === n ? ' active' : ''}`}
               onClick={() => setTab(n)}
-            >
-              {n}
-            </button>
+            >{n}</button>
           ))}
         </nav>
         <div className="status-pill">
@@ -590,14 +666,16 @@ export default function App() {
           <div>
             <h1>{tab}</h1>
             <p className="muted page-copy">
-              {tab === 'Dashboard' && 'Overview of recorded matches, backend summaries, and the most recent event stream.'}
-              {tab === 'Matches' && 'Manual match creation plus a live table of the backend match store.'}
-              {tab === 'Analysis' && 'Transport timing, result grouping, and enemy-style breakdowns from FastAPI.'}
-              {tab === 'Recommendations' && 'Probe the live recommendation endpoint and inspect the JSON response.'}
-              {tab === 'Automation' && 'Define safe manual-gated helpers after your analysis layer is solid.'}
+              {tab === 'Dashboard' && 'Overview of recorded matches, decoded event stream, and analysis summaries from FastAPI.'}
+              {tab === 'Matches' && 'Manual match entry form and a live table of the backend match store.'}
+              {tab === 'Analysis' && 'Win-rate breakdowns, transport timing windows, and enemy-style matchup data.'}
+              {tab === 'Recommendations' && 'Probe the live recommendation endpoint with a sample in-game state.'}
+              {tab === 'Automation' && 'Guidance on safe, manual-gated automation helpers to build next.'}
             </p>
           </div>
-          <button className="ghost-btn" onClick={refreshData} disabled={loading.data}>{loading.data ? 'Refreshing…' : 'Refresh'}</button>
+          <button className="ghost-btn" onClick={refreshData} disabled={loading.data}>
+            {loading.data ? 'Refreshing…' : 'Refresh'}
+          </button>
         </header>
 
         {error ? <div className="error-banner">{error}</div> : null}
