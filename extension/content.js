@@ -18,14 +18,27 @@ window.addEventListener('message', (event) => {
   const { endpoint, payload } = event.data;
   if (!endpoint || !payload) return;
 
-  chrome.runtime.sendMessage(
-    { type: 'PW_FETCH', endpoint, payload },
-    (response) => {
-      if (chrome.runtime.lastError) {
-        console.warn('[PW-Bridge] sendMessage error:', chrome.runtime.lastError.message);
+  // Guard against "Extension context invalidated" — happens when the
+  // extension is reloaded while the page stays open. The old content
+  // script keeps running but its runtime connection is severed.
+  // Fix: hard-reload the game page after reloading the extension.
+  if (!chrome.runtime?.id) {
+    console.warn('[PW-Bridge] Extension context invalidated. Hard-reload the page.');
+    return;
+  }
+
+  try {
+    chrome.runtime.sendMessage(
+      { type: 'PW_FETCH', endpoint, payload },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          console.warn('[PW-Bridge] sendMessage error:', chrome.runtime.lastError.message);
+        }
       }
-    }
-  );
+    );
+  } catch (err) {
+    console.warn('[PW-Bridge] sendMessage threw:', err.message);
+  }
 });
 
 console.log('[PW-Bridge] content script ready.');
