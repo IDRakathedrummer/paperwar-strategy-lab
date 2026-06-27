@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PaperWar Strategy Lab - Auto Capture
 // @namespace    paperwar-strategy-lab
-// @version      2.9
+// @version      3.0
 // @description  Full match recorder: real DOM selectors + click-intercepted build/transport events
 // @author       paperwar-strategy-lab
 // @match        http://paper.hosted-by-fern.host:*/*
@@ -29,9 +29,6 @@
   function relT() { return startTs ? ((Date.now() - startTs) / 1000) : 0; }
 
   // ─── BRIDGE DETECTION ──────────────────────────────────────────────────────
-  // Defer the check by 2s so the content script always has time to set
-  // window.__pwBridgeReady before we evaluate it. Both scripts run at
-  // document-idle and the race is otherwise non-deterministic.
   setTimeout(() => {
     if (!window.__pwBridgeReady) {
       console.warn(
@@ -53,8 +50,8 @@
 
   function getOwnedTech() {
     return {
-      owned: all('.technode.owned .tn-nm'),
-      poor:  all('.technode.poor .tn-nm'),
+      owned:  all('.technode.owned .tn-nm'),
+      poor:   all('.technode.poor .tn-nm'),
       locked: all('.technode.locked .tn-nm'),
     };
   }
@@ -73,19 +70,38 @@
   function getAmmo() { return all('.aminkrow'); }
 
   // ─── PHASE DETECTION ──────────────────────────────────────────────────────
+  // The result overlay keeps .hpbar in the DOM, so we must check for the
+  // result screen FIRST before the match condition, using the unique
+  // "BATTLE CONCLUDED" text that only appears on the end screen.
+  function isBattleConcluded() {
+    return document.body.innerText.includes('BATTLE CONCLUDED');
+  }
+
   function getPhase() {
+    if (isBattleConcluded())                                     return 'result';
     if (document.querySelector('.hpbar') && getInk() !== null)  return 'match';
-    if (document.querySelector('.rc-head'))                      return 'result';
     if (document.querySelector('.lob-actions'))                  return 'lobby';
     if (document.querySelector('.screen'))                       return 'menu';
     return 'unknown';
   }
 
   function getResult() {
-    const head  = txt('.rc-head');
-    const label = txt('.rc-label');
-    const sub   = txt('.rc-sub');
-    return head ? { head, label, sub } : null;
+    // Find the big outcome word: DEFEAT, VICTORY, DRAW, etc.
+    // It's the largest/most prominent text on the result overlay.
+    const outcomeEl = [...document.querySelectorAll('*')].find(el =>
+      el.children.length === 0 &&
+      /^(DEFEAT|VICTORY|DRAW|WIN|LOSS)$/i.test((el.innerText || '').trim())
+    );
+    const outcome = outcomeEl ? outcomeEl.innerText.trim() : null;
+
+    // Grab the stats paragraph ("Your team's Commanders were destroyed. Time...").
+    const statsEl = [...document.querySelectorAll('*')].find(el =>
+      el.children.length === 0 &&
+      /commanders|destroyed|time \d/i.test((el.innerText || '').trim())
+    );
+    const stats = statsEl ? statsEl.innerText.trim() : null;
+
+    return { head: outcome, label: stats, sub: null };
   }
 
   function getLobbyConfig() {
@@ -97,8 +113,6 @@
   }
 
   // ─── API TRANSPORT ────────────────────────────────────────────────────────
-  // Routes through the companion Chrome extension bridge to bypass
-  // Chrome's Private Network Access block on HTTP public → loopback.
   function post(endpoint, payload) {
     window.postMessage(
       { type: 'PW_CAPTURE_POST', endpoint, payload },
@@ -122,25 +136,13 @@
     lastSnapshotAt = 0;
 
     console.log('[PW-Capture] Match START:', matchId);
-    post('/api/matches/start', {
-      match_id: matchId,
-      timestamp: startTs,
-      config,
-    });
+    post('/api/matches/start', { match_id: matchId, timestamp: startTs, config });
 
-    // Seed prevInk/prevTech and record initial snapshot immediately
-    // so REC shows non-zero events and future diffs are correct.
     const ink  = getInk();
     const tech = getOwnedTech();
     prevInk  = ink;
     prevTech = tech;
-    recordEvent('match_start_snapshot', {
-      ink,
-      tech,
-      units: getUnits(),
-      hp:    getHP(),
-      ammo:  getAmmo(),
-    });
+    recordEvent('match_start_snapshot', { ink, tech, units: getUnits(), hp: getHP(), ammo: getAmmo() });
 
     document.addEventListener('click', onDocumentClick, true);
   }
@@ -149,13 +151,7 @@
     if (!matchId) return;
     document.removeEventListener('click', onDocumentClick, true);
 
-    recordEvent('match_end_snapshot', {
-      ink:   getInk(),
-      tech:  getOwnedTech(),
-      units: getUnits(),
-      hp:    getHP(),
-      ammo:  getAmmo(),
-    });
+    recordEvent('match_end_snapshot', { ink: getInk(), tech: getOwnedTech(), units: getUnits(), hp: getHP(), ammo: getAmmo() });
 
     console.log('[PW-Capture] Match END:', result);
     post('/api/matches/end', {
@@ -186,8 +182,8 @@
 
     const sig = (btn.className || '') + ' ' + label;
     let type = 'ui_click';
-    if (/unlock|technode/i.test(sig))                                   type = 'tech_unlock';
-    else if (/transport|load|drop|carrier|naval/i.test(sig))            type = 'transport';
+    if (/unlock|technode/i.test(sig))                                      type = 'tech_unlock';
+    else if (/transport|load|drop|carrier|naval/i.test(sig))               type = 'transport';
     else if (/build|produce|queue|spawn|place|airport|factory/i.test(sig)) type = 'build';
 
     if (type !== 'tech_unlock') recordEvent(type, { entity: label });
@@ -200,8 +196,8 @@
 
     if (phase !== lastPhase) {
       console.log(`[PW-Capture] Phase: ${lastPhase} → ${phase}`);
-      if (phase === 'match' && !matchId)               onMatchStart(getLobbyConfig());
-      if (phase === 'result' && lastPhase === 'match')  onMatchEnd(getResult());
+      if (phase === 'match' && !matchId)              onMatchStart(getLobbyConfig());
+      if (phase === 'result' && lastPhase === 'match') onMatchEnd(getResult());
       lastPhase = phase;
     }
 
@@ -228,7 +224,7 @@
   }
 
   setInterval(poll, POLL_MS);
-  console.log('[PW-Capture] v2.9 loaded. Backend:', API);
+  console.log('[PW-Capture] v3.0 loaded. Backend:', API);
 
   // ─── STATUS BADGE ─────────────────────────────────────────────────────────
   const badge = document.createElement('div');
