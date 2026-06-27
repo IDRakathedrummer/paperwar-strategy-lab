@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PaperWar Strategy Lab - Auto Capture
 // @namespace    paperwar-strategy-lab
-// @version      2.5
+// @version      2.6
 // @description  Full match recorder: real DOM selectors + click-intercepted build/transport events
 // @author       paperwar-strategy-lab
 // @match        http://paper.hosted-by-fern.host:*/*
@@ -59,15 +59,15 @@
   function getAmmo() { return all('.aminkrow'); }
 
   // ─── PHASE DETECTION ──────────────────────────────────────────────────────
-  // isVisible() was unreliable: the game wraps all sections in a display:none
-  // ancestor, so every selector appeared hidden regardless of actual game state.
-  // Instead, use pure querySelector presence checks. The getInk() !== null guard
-  // on 'match' prevents false positives if .hpbar lingers during lobby/menu.
+  // The game keeps all section elements in the DOM at all times — only
+  // toggling a display:none ancestor. querySelector presence alone is
+  // therefore unreliable. Instead we use getInk() as the primary truth
+  // signal: ink is only readable when a match is actually running.
   function getPhase() {
-    if (document.querySelector('.rc-head'))                              return 'result';
-    if (document.querySelector('.lob-actions'))                         return 'lobby';
-    if (document.querySelector('.hpbar') && getInk() !== null)         return 'match';
-    if (document.querySelector('.screen'))                              return 'menu';
+    if (document.querySelector('.hpbar') && getInk() !== null)  return 'match';
+    if (document.querySelector('.rc-head'))                      return 'result';
+    if (document.querySelector('.lob-actions'))                  return 'lobby';
+    if (document.querySelector('.screen'))                       return 'menu';
     return 'unknown';
   }
 
@@ -209,7 +209,7 @@
   }
 
   setInterval(poll, POLL_MS);
-  console.log('[PW-Capture] v2.5 loaded. Backend:', API);
+  console.log('[PW-Capture] v2.6 loaded. Backend:', API);
 
   // ─── STATUS BADGE ─────────────────────────────────────────────────────────
   const badge = document.createElement('div');
