@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PaperWar Strategy Lab - Auto Capture
 // @namespace    paperwar-strategy-lab
-// @version      2.4
+// @version      2.5
 // @description  Full match recorder: real DOM selectors + click-intercepted build/transport events
 // @author       paperwar-strategy-lab
 // @match        http://paper.hosted-by-fern.host:*/*
@@ -27,20 +27,6 @@
   let startTs = null;
 
   function relT() { return startTs ? ((Date.now() - startTs) / 1000) : 0; }
-
-  // ─── VISIBILITY HELPER ───────────────────────────────────────────────────
-  // Walk the ancestor chain — the game hides sections by setting display:none
-  // on a parent element, which makes getComputedStyle on the child unreliable.
-  function isVisible(sel) {
-    let el = document.querySelector(sel);
-    if (!el) return false;
-    while (el && el !== document.body) {
-      const s = window.getComputedStyle(el);
-      if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
-      el = el.parentElement;
-    }
-    return true;
-  }
 
   // ─── DOM READERS ───────────────────────────────────────────────────────────
   function txt(sel) { const e = document.querySelector(sel); return e ? e.innerText.trim() : null; }
@@ -72,12 +58,16 @@
 
   function getAmmo() { return all('.aminkrow'); }
 
-  // ─── PHASE DETECTION (ancestor-walk visibility) ────────────────────────────
+  // ─── PHASE DETECTION ──────────────────────────────────────────────────────
+  // isVisible() was unreliable: the game wraps all sections in a display:none
+  // ancestor, so every selector appeared hidden regardless of actual game state.
+  // Instead, use pure querySelector presence checks. The getInk() !== null guard
+  // on 'match' prevents false positives if .hpbar lingers during lobby/menu.
   function getPhase() {
-    if (isVisible('.rc-head'))     return 'result';
-    if (isVisible('.lob-actions')) return 'lobby';
-    if (isVisible('.hpbar'))       return 'match';
-    if (isVisible('.screen'))      return 'menu';
+    if (document.querySelector('.rc-head'))                              return 'result';
+    if (document.querySelector('.lob-actions'))                         return 'lobby';
+    if (document.querySelector('.hpbar') && getInk() !== null)         return 'match';
+    if (document.querySelector('.screen'))                              return 'menu';
     return 'unknown';
   }
 
@@ -219,7 +209,7 @@
   }
 
   setInterval(poll, POLL_MS);
-  console.log('[PW-Capture] v2.4 loaded. Backend:', API);
+  console.log('[PW-Capture] v2.5 loaded. Backend:', API);
 
   // ─── STATUS BADGE ─────────────────────────────────────────────────────────
   const badge = document.createElement('div');
