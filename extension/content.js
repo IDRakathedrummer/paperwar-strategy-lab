@@ -3,9 +3,12 @@
 // the userscript and forwards them to the background service worker,
 // which does the actual fetch() to localhost:8000.
 
-// Signal to the userscript that the bridge extension is active.
-// This suppresses the "Bridge extension not detected" console warning.
-window.__pwBridgeReady = true;
+// Inject a flag into the PAGE's JS world (not the extension isolated world)
+// so the userscript can read window.__pwBridgeReady.
+const flagScript = document.createElement('script');
+flagScript.textContent = 'window.__pwBridgeReady = true;';
+(document.head || document.documentElement).appendChild(flagScript);
+flagScript.remove();
 
 window.addEventListener('message', (event) => {
   // Only handle messages from this page, with our sentinel type.
