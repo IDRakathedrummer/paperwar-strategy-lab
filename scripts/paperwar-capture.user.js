@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PaperWar Strategy Lab - Auto Capture
 // @namespace    paperwar-strategy-lab
-// @version      2.7
+// @version      2.8
 // @description  Full match recorder: real DOM selectors + click-intercepted build/transport events
 // @author       paperwar-strategy-lab
 // @match        http://paper.hosted-by-fern.host:*/*
@@ -25,6 +25,7 @@
   let prevTech = null;
   let lastSnapshotAt = 0;
   let startTs = null;
+  let bridgeWarnedOnce = false;
 
   function relT() { return startTs ? ((Date.now() - startTs) / 1000) : 0; }
 
@@ -59,9 +60,6 @@
   function getAmmo() { return all('.aminkrow'); }
 
   // ─── PHASE DETECTION ──────────────────────────────────────────────────────
-  // The game keeps all sections in the DOM at all times, toggling a
-  // display:none ancestor. Use getInk() as the primary truth signal —
-  // ink is only readable when a match is actually running.
   function getPhase() {
     if (document.querySelector('.hpbar') && getInk() !== null)  return 'match';
     if (document.querySelector('.rc-head'))                      return 'result';
@@ -86,16 +84,26 @@
   }
 
   // ─── API TRANSPORT ────────────────────────────────────────────────────────
-  function post(endpoint, data) {
-    fetch(API + endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    })
-    .then(res => {
-      if (!res.ok) res.text().then(t => console.warn('[PW-Capture] HTTP', res.status, endpoint, t));
-    })
-    .catch(err => console.warn('[PW-Capture] POST failed:', endpoint, err));
+  // Chrome's Private Network Access policy hard-blocks HTTP public origins
+  // from fetching loopback. We route through a companion Chrome extension
+  // (extension/) that posts from a secure extension context instead.
+  // The extension content script listens for PW_CAPTURE_POST postMessages.
+  function post(endpoint, payload) {
+    window.postMessage(
+      { type: 'PW_CAPTURE_POST', endpoint, payload },
+      '*'
+    );
+
+    // Warn once if the bridge extension doesn't appear to be installed.
+    // The extension injects a flag on the window when its content script runs.
+    if (!window.__pwBridgeReady && !bridgeWarnedOnce) {
+      bridgeWarnedOnce = true;
+      console.warn(
+        '[PW-Capture] Bridge extension not detected. ' +
+        'Load extension/ in chrome://extensions (Developer mode) ' +
+        'to enable backend communication.'
+      );
+    }
   }
 
   // ─── EVENT HELPERS ────────────────────────────────────────────────────────
@@ -178,8 +186,8 @@
 
     const sig = (btn.className || '') + ' ' + label;
     let type = 'ui_click';
-    if (/unlock|technode/i.test(sig))                              type = 'tech_unlock';
-    else if (/transport|load|drop|carrier|naval/i.test(sig))      type = 'transport';
+    if (/unlock|technode/i.test(sig))                                   type = 'tech_unlock';
+    else if (/transport|load|drop|carrier|naval/i.test(sig))            type = 'transport';
     else if (/build|produce|queue|spawn|place|airport|factory/i.test(sig)) type = 'build';
 
     if (type !== 'tech_unlock') recordEvent(type, { entity: label });
@@ -192,10 +200,8 @@
 
     if (phase !== lastPhase) {
       console.log(`[PW-Capture] Phase: ${lastPhase} → ${phase}`);
-      // Start recording whenever we enter match and aren't already recording,
-      // regardless of which phase we came from (handles missed lobby transition).
-      if (phase === 'match' && !matchId)              onMatchStart(getLobbyConfig());
-      if (phase === 'result' && lastPhase === 'match') onMatchEnd(getResult());
+      if (phase === 'match' && !matchId)               onMatchStart(getLobbyConfig());
+      if (phase === 'result' && lastPhase === 'match')  onMatchEnd(getResult());
       lastPhase = phase;
     }
 
@@ -222,7 +228,7 @@
   }
 
   setInterval(poll, POLL_MS);
-  console.log('[PW-Capture] v2.7 loaded. Backend:', API);
+  console.log('[PW-Capture] v2.8 loaded. Backend:', API);
 
   // ─── STATUS BADGE ─────────────────────────────────────────────────────────
   const badge = document.createElement('div');
