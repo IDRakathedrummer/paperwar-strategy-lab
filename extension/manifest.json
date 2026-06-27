@@ -16,6 +16,11 @@
       "js": ["content.js"],
       "run_at": "document_idle",
       "world": "MAIN"
+    },
+    {
+      "matches": ["http://paper.hosted-by-fern.host/*"],
+      "js": ["relay.js"],
+      "run_at": "document_idle"
     }
   ],
   "background": {
