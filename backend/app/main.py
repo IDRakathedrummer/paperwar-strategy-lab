@@ -6,6 +6,7 @@ app = FastAPI(
     title="PaperWar Strategy Lab API",
     version="0.1.0",
     description="Match ingestion, strategy analysis, recommendations, and automation gating for PaperWar.",
+    redirect_slashes=False,
 )
 
 app.add_middleware(
