@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PaperWar Strategy Lab - Auto Capture
 // @namespace    paperwar-strategy-lab
-// @version      2.3
+// @version      2.4
 // @description  Full match recorder: real DOM selectors + click-intercepted build/transport events
 // @author       paperwar-strategy-lab
 // @match        http://paper.hosted-by-fern.host:*/*
@@ -29,15 +29,17 @@
   function relT() { return startTs ? ((Date.now() - startTs) / 1000) : 0; }
 
   // ─── VISIBILITY HELPER ───────────────────────────────────────────────────
-  // The game hides elements with CSS rather than removing them from the DOM.
-  // Use getBoundingClientRect to check if an element is actually visible.
+  // Walk the ancestor chain — the game hides sections by setting display:none
+  // on a parent element, which makes getComputedStyle on the child unreliable.
   function isVisible(sel) {
-    const el = document.querySelector(sel);
+    let el = document.querySelector(sel);
     if (!el) return false;
-    const r = el.getBoundingClientRect();
-    if (r.width === 0 && r.height === 0) return false;
-    const style = window.getComputedStyle(el);
-    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    while (el && el !== document.body) {
+      const s = window.getComputedStyle(el);
+      if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+      el = el.parentElement;
+    }
+    return true;
   }
 
   // ─── DOM READERS ───────────────────────────────────────────────────────────
@@ -70,12 +72,12 @@
 
   function getAmmo() { return all('.aminkrow'); }
 
-  // ─── PHASE DETECTION (visibility-based) ────────────────────────────────────
+  // ─── PHASE DETECTION (ancestor-walk visibility) ────────────────────────────
   function getPhase() {
-    if (isVisible('.rc-head'))    return 'result';
+    if (isVisible('.rc-head'))     return 'result';
     if (isVisible('.lob-actions')) return 'lobby';
-    if (isVisible('.hpbar'))      return 'match';
-    if (isVisible('.screen'))     return 'menu';
+    if (isVisible('.hpbar'))       return 'match';
+    if (isVisible('.screen'))      return 'menu';
     return 'unknown';
   }
 
@@ -217,7 +219,7 @@
   }
 
   setInterval(poll, POLL_MS);
-  console.log('[PW-Capture] v2.3 loaded. Backend:', API);
+  console.log('[PW-Capture] v2.4 loaded. Backend:', API);
 
   // ─── STATUS BADGE ─────────────────────────────────────────────────────────
   const badge = document.createElement('div');
