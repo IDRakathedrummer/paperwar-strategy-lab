@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PaperWar Capture Bridge",
-  "version": "1.0",
+  "version": "1.1",
   "description": "Bridges userscript API calls to localhost:8000, bypassing Chrome Private Network Access restrictions.",
   "permissions": [
     "scripting"
@@ -14,7 +14,8 @@
     {
       "matches": ["http://paper.hosted-by-fern.host/*"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "world": "MAIN"
     }
   ],
   "background": {

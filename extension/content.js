@@ -1,44 +1,24 @@
 // PaperWar Capture Bridge — content script
-// Runs in the game page context. Listens for postMessage events from
-// the userscript and forwards them to the background service worker,
-// which does the actual fetch() to localhost:8000.
+// Runs in the MAIN world (same window as the userscript) so that:
+// - window.__pwBridgeReady is directly visible to the userscript
+// - window.postMessage events are on the same window object
+// No script tag injection needed.
 
-// Inject a flag into the PAGE's JS world (not the extension isolated world)
-// so the userscript can read window.__pwBridgeReady.
-const flagScript = document.createElement('script');
-flagScript.textContent = 'window.__pwBridgeReady = true;';
-(document.head || document.documentElement).appendChild(flagScript);
-flagScript.remove();
+// Signal to the userscript that the bridge is active.
+window.__pwBridgeReady = true;
 
 window.addEventListener('message', (event) => {
-  // Only handle messages from this page, with our sentinel type.
   if (event.source !== window) return;
   if (!event.data || event.data.type !== 'PW_CAPTURE_POST') return;
 
   const { endpoint, payload } = event.data;
   if (!endpoint || !payload) return;
 
-  // Guard against "Extension context invalidated" — happens when the
-  // extension is reloaded while the page stays open. The old content
-  // script keeps running but its runtime connection is severed.
-  // Fix: hard-reload the game page after reloading the extension.
-  if (!chrome.runtime?.id) {
-    console.warn('[PW-Bridge] Extension context invalidated. Hard-reload the page.');
-    return;
-  }
-
-  try {
-    chrome.runtime.sendMessage(
-      { type: 'PW_FETCH', endpoint, payload },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          console.warn('[PW-Bridge] sendMessage error:', chrome.runtime.lastError.message);
-        }
-      }
-    );
-  } catch (err) {
-    console.warn('[PW-Bridge] sendMessage threw:', err.message);
-  }
+  // NOTE: Running in MAIN world means chrome.runtime is NOT available here.
+  // We relay via a CustomEvent to a thin isolated-world relay script.
+  window.dispatchEvent(
+    new CustomEvent('__pwRelay', { detail: { endpoint, payload } })
+  );
 });
 
-console.log('[PW-Bridge] content script ready.');
+console.log('[PW-Bridge] content script ready (MAIN world).');
