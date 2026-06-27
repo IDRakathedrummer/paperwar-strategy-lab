@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PaperWar Strategy Lab - Auto Capture
 // @namespace    paperwar-strategy-lab
-// @version      2.2
+// @version      2.3
 // @description  Full match recorder: real DOM selectors + click-intercepted build/transport events
 // @author       paperwar-strategy-lab
 // @match        http://paper.hosted-by-fern.host:*/*
@@ -27,6 +27,18 @@
   let startTs = null;
 
   function relT() { return startTs ? ((Date.now() - startTs) / 1000) : 0; }
+
+  // ─── VISIBILITY HELPER ───────────────────────────────────────────────────
+  // The game hides elements with CSS rather than removing them from the DOM.
+  // Use getBoundingClientRect to check if an element is actually visible.
+  function isVisible(sel) {
+    const el = document.querySelector(sel);
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return false;
+    const style = window.getComputedStyle(el);
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+  }
 
   // ─── DOM READERS ───────────────────────────────────────────────────────────
   function txt(sel) { const e = document.querySelector(sel); return e ? e.innerText.trim() : null; }
@@ -58,11 +70,12 @@
 
   function getAmmo() { return all('.aminkrow'); }
 
+  // ─── PHASE DETECTION (visibility-based) ────────────────────────────────────
   function getPhase() {
-    if (document.querySelector('.lob-actions')) return 'lobby';
-    if (document.querySelector('.rc-head')) return 'result';
-    if (document.querySelector('.hpbar')) return 'match';
-    if (document.querySelector('.screen')) return 'menu';
+    if (isVisible('.rc-head'))    return 'result';
+    if (isVisible('.lob-actions')) return 'lobby';
+    if (isVisible('.hpbar'))      return 'match';
+    if (isVisible('.screen'))     return 'menu';
     return 'unknown';
   }
 
@@ -81,7 +94,7 @@
     };
   }
 
-  // ─── API TRANSPORT (plain fetch — visible in Network tab, no @connect needed) ──────
+  // ─── API TRANSPORT ────────────────────────────────────────────────────────
   function post(endpoint, data) {
     fetch(API + endpoint, {
       method: 'POST',
@@ -204,7 +217,7 @@
   }
 
   setInterval(poll, POLL_MS);
-  console.log('[PW-Capture] v2.2 loaded. Backend:', API);
+  console.log('[PW-Capture] v2.3 loaded. Backend:', API);
 
   // ─── STATUS BADGE ─────────────────────────────────────────────────────────
   const badge = document.createElement('div');
