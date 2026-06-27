@@ -566,10 +566,13 @@ export default function App() {
       })
 
       // index 0 = most recent match (backend returns newest-first)
+      // Guard explicitly against undefined/null/"undefined" to prevent
+      // fetchJSON('events/undefined') which causes a 307 → 405 error chain
       const latestMatch = loadedMatches[0]
-      if (latestMatch?.id) {
+      const matchId = latestMatch?.id
+      if (matchId && matchId !== 'undefined' && matchId !== 'null') {
         try {
-          const eventsRes = await fetchJSON(`events/${latestMatch.id}`)
+          const eventsRes = await fetchJSON(`events/${matchId}`)
           setRecentEvents(eventsRes.events || [])
         } catch {
           setRecentEvents([])
