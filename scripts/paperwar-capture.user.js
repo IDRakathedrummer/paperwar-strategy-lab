@@ -1,13 +1,12 @@
 // ==UserScript==
 // @name         PaperWar Strategy Lab - Auto Capture
 // @namespace    paperwar-strategy-lab
-// @version      2.1
+// @version      2.2
 // @description  Full match recorder: real DOM selectors + click-intercepted build/transport events
 // @author       paperwar-strategy-lab
 // @match        http://paper.hosted-by-fern.host:*/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=hosted-by-fern.host
-// @grant        GM_xmlhttpRequest
-// @connect      localhost
+// @grant        none
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -29,7 +28,7 @@
 
   function relT() { return startTs ? ((Date.now() - startTs) / 1000) : 0; }
 
-  // ─── DOM READERS (real game selectors from v1.0) ──────────────────────────
+  // ─── DOM READERS ───────────────────────────────────────────────────────────
   function txt(sel) { const e = document.querySelector(sel); return e ? e.innerText.trim() : null; }
   function all(sel) { return [...document.querySelectorAll(sel)].map(e => e.innerText.trim()); }
 
@@ -82,18 +81,17 @@
     };
   }
 
-  // ─── API TRANSPORT ────────────────────────────────────────────────────────
+  // ─── API TRANSPORT (plain fetch — visible in Network tab, no @connect needed) ──────
   function post(endpoint, data) {
-    GM_xmlhttpRequest({
+    fetch(API + endpoint, {
       method: 'POST',
-      url: API + endpoint,
       headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify(data),
-      onerror: (err) => console.warn('[PW-Capture] POST failed:', endpoint, err),
-      onload: (res) => {
-        if (res.status >= 400) console.warn('[PW-Capture] HTTP', res.status, endpoint, res.responseText);
-      },
-    });
+      body: JSON.stringify(data),
+    })
+    .then(res => {
+      if (!res.ok) res.text().then(t => console.warn('[PW-Capture] HTTP', res.status, endpoint, t));
+    })
+    .catch(err => console.warn('[PW-Capture] POST failed:', endpoint, err));
   }
 
   // ─── EVENT HELPERS ────────────────────────────────────────────────────────
@@ -114,7 +112,7 @@
     lastSnapshotAt = 0;
 
     console.log('[PW-Capture] Match START:', matchId);
-    post('/api/matches/start', {        // ✅ fixed: was /matches/start
+    post('/api/matches/start', {
       match_id: matchId,
       timestamp: startTs,
       config,
@@ -136,7 +134,7 @@
     });
 
     console.log('[PW-Capture] Match END:', result);
-    post('/api/matches/end', {          // ✅ fixed: was /matches/end
+    post('/api/matches/end', {
       match_id: matchId,
       timestamp: Date.now(),
       result: result || { head: 'unknown', label: null, sub: null },
@@ -206,7 +204,7 @@
   }
 
   setInterval(poll, POLL_MS);
-  console.log('[PW-Capture] v2.1 loaded. Backend:', API);
+  console.log('[PW-Capture] v2.2 loaded. Backend:', API);
 
   // ─── STATUS BADGE ─────────────────────────────────────────────────────────
   const badge = document.createElement('div');
