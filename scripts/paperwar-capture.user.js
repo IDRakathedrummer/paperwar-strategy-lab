@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PaperWar Strategy Lab - Auto Capture
 // @namespace    paperwar-strategy-lab
-// @version      3.0
+// @version      3.1
 // @description  Full match recorder: real DOM selectors + click-intercepted build/transport events
 // @author       paperwar-strategy-lab
 // @match        http://paper.hosted-by-fern.host:*/*
@@ -17,7 +17,7 @@
   const POLL_MS = 2000;
   const SNAP_EVERY = 10000;
 
-  // ─── STATE ────────────────────────────────────────────────────────────────
+  // ─── STATE ───────────────────────────────────────────────────────────────────────────
   let matchId = null;
   let lastPhase = null;
   let eventBuffer = [];
@@ -25,10 +25,11 @@
   let prevTech = null;
   let lastSnapshotAt = 0;
   let startTs = null;
+  let capturedMapName = null;
 
   function relT() { return startTs ? ((Date.now() - startTs) / 1000) : 0; }
 
-  // ─── BRIDGE DETECTION ──────────────────────────────────────────────────────
+  // ─── BRIDGE DETECTION ─────────────────────────────────────────────────────────
   setTimeout(() => {
     if (!window.__pwBridgeReady) {
       console.warn(
@@ -39,7 +40,7 @@
     }
   }, 2000);
 
-  // ─── DOM READERS ───────────────────────────────────────────────────────────
+  // ─── DOM READERS ──────────────────────────────────────────────────────────────────
   function txt(sel) { const e = document.querySelector(sel); return e ? e.innerText.trim() : null; }
   function all(sel) { return [...document.querySelectorAll(sel)].map(e => e.innerText.trim()); }
 
@@ -69,7 +70,35 @@
 
   function getAmmo() { return all('.aminkrow'); }
 
-  // ─── PHASE DETECTION ──────────────────────────────────────────────────────
+  // Try several candidate selectors for the map name shown in the lobby / HUD.
+  // Add more selectors here as the game DOM is explored.
+  function getMapName() {
+    const candidates = [
+      '.map-name',
+      '.mp-name',
+      '.mapname',
+      '.map-title',
+      '.lobby-map-name',
+      '[class*="mapname"]',
+      '[class*="map-name"]',
+      '[class*="mp-name"]',
+    ];
+    for (const sel of candidates) {
+      const v = txt(sel);
+      if (v) return v;
+    }
+    // Fallback: look for a short text node near a "Map:" label
+    const mapLabel = [...document.querySelectorAll('*')].find(
+      el => el.children.length === 0 && /^map[:\s]/i.test((el.innerText || '').trim())
+    );
+    if (mapLabel) {
+      const sibling = mapLabel.nextElementSibling;
+      if (sibling && sibling.innerText) return sibling.innerText.trim();
+    }
+    return null;
+  }
+
+  // ─── PHASE DETECTION ───────────────────────────────────────────────────────────────
   // The result overlay keeps .hpbar in the DOM, so we must check for the
   // result screen FIRST before the match condition, using the unique
   // "BATTLE CONCLUDED" text that only appears on the end screen.
@@ -87,14 +116,13 @@
 
   function getResult() {
     // Find the big outcome word: DEFEAT, VICTORY, DRAW, etc.
-    // It's the largest/most prominent text on the result overlay.
     const outcomeEl = [...document.querySelectorAll('*')].find(el =>
       el.children.length === 0 &&
       /^(DEFEAT|VICTORY|DRAW|WIN|LOSS)$/i.test((el.innerText || '').trim())
     );
     const outcome = outcomeEl ? outcomeEl.innerText.trim() : null;
 
-    // Grab the stats paragraph ("Your team's Commanders were destroyed. Time...").
+    // Grab the stats paragraph.
     const statsEl = [...document.querySelectorAll('*')].find(el =>
       el.children.length === 0 &&
       /commanders|destroyed|time \d/i.test((el.innerText || '').trim())
@@ -112,7 +140,7 @@
     };
   }
 
-  // ─── API TRANSPORT ────────────────────────────────────────────────────────
+  // ─── API TRANSPORT ──────────────────────────────────────────────────────────────────
   function post(endpoint, payload) {
     window.postMessage(
       { type: 'PW_CAPTURE_POST', endpoint, payload },
@@ -120,7 +148,7 @@
     );
   }
 
-  // ─── EVENT HELPERS ────────────────────────────────────────────────────────
+  // ─── EVENT HELPERS ─────────────────────────────────────────────────────────────────
   function recordEvent(type, data = {}) {
     if (!matchId) return;
     const ev = { t: Math.round(relT()), type, ...data };
@@ -128,15 +156,21 @@
     post('/api/events/', { match_id: matchId, ...ev });
   }
 
-  // ─── LIFECYCLE ────────────────────────────────────────────────────────────
+  // ─── LIFECYCLE ──────────────────────────────────────────────────────────────────────
   function onMatchStart(config) {
     matchId = `match_${Date.now()}`;
     startTs = Date.now();
     eventBuffer = [];
     lastSnapshotAt = 0;
+    capturedMapName = getMapName();
 
-    console.log('[PW-Capture] Match START:', matchId);
-    post('/api/matches/start', { match_id: matchId, timestamp: startTs, config });
+    console.log('[PW-Capture] Match START:', matchId, '| map:', capturedMapName);
+    post('/api/matches/start', {
+      match_id:  matchId,
+      timestamp: startTs,
+      map_name:  capturedMapName,
+      config,
+    });
 
     const ink  = getInk();
     const tech = getOwnedTech();
@@ -153,12 +187,16 @@
 
     recordEvent('match_end_snapshot', { ink: getInk(), tech: getOwnedTech(), units: getUnits(), hp: getHP(), ammo: getAmmo() });
 
+    // Re-read map name on end in case it wasn't available at start
+    const mapNameFinal = capturedMapName || getMapName();
+
     console.log('[PW-Capture] Match END:', result);
     post('/api/matches/end', {
-      match_id:  matchId,
-      timestamp: Date.now(),
-      result:    result || { head: 'unknown', label: null, sub: null },
-      events:    eventBuffer,
+      match_id:   matchId,
+      timestamp:  Date.now(),
+      result:     result || { head: 'unknown', label: null, sub: null },
+      map_name:   mapNameFinal,
+      events:     eventBuffer,
     });
 
     matchId = null;
@@ -166,9 +204,10 @@
     eventBuffer = [];
     prevInk = prevTech = null;
     lastSnapshotAt = 0;
+    capturedMapName = null;
   }
 
-  // ─── CLICK INTERCEPTOR ────────────────────────────────────────────────────
+  // ─── CLICK INTERCEPTOR ───────────────────────────────────────────────────────────────
   function onDocumentClick(e) {
     const btn = e.target.closest(
       'button, [class*="btn"], .technode, [class*="unit"], ' +
@@ -190,7 +229,7 @@
     else                        recordEvent(type, { entity: label, via: 'click' });
   }
 
-  // ─── POLL LOOP ────────────────────────────────────────────────────────────
+  // ─── POLL LOOP ──────────────────────────────────────────────────────────────────────────
   function poll() {
     const phase = getPhase();
 
@@ -224,9 +263,9 @@
   }
 
   setInterval(poll, POLL_MS);
-  console.log('[PW-Capture] v3.0 loaded. Backend:', API);
+  console.log('[PW-Capture] v3.1 loaded. Backend:', API);
 
-  // ─── STATUS BADGE ─────────────────────────────────────────────────────────
+  // ─── STATUS BADGE ────────────────────────────────────────────────────────────────────
   const badge = document.createElement('div');
   badge.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:99999;'
     + 'background:rgba(0,0,0,0.72);color:#fff;font:11px/1.2 monospace;'

@@ -46,7 +46,7 @@ def init_db():
 init_db()
 
 
-# ── Pydantic models ────────────────────────────────────────────────────────────
+# ── Pydantic models ──────────────────────────────────────────────────────────────────────────────
 
 class MatchCreate(BaseModel):
     """Manual match entry from the dashboard form."""
@@ -61,6 +61,7 @@ class MatchStart(BaseModel):
     """Fired by the Tampermonkey userscript when a match begins."""
     match_id: str
     timestamp: int
+    map_name: Optional[str] = None
     config: Optional[Any] = None
 
 
@@ -69,18 +70,20 @@ class MatchEnd(BaseModel):
     match_id: str
     timestamp: int
     result: Optional[Any] = None
+    map_name: Optional[str] = None
+    enemy_style: Optional[str] = None
     events: list = []
 
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
+# ── Routes ────────────────────────────────────────────────────────────────────────────────────
 
 @router.post("/start")
 def match_start(body: MatchStart):
     """Userscript: called when a match begins (lobby → game transition)."""
     con = get_db()
     con.execute(
-        "INSERT OR REPLACE INTO matches (id, started_at, config) VALUES (?,?,?)",
-        (body.match_id, body.timestamp, json.dumps(body.config))
+        "INSERT OR REPLACE INTO matches (id, started_at, map_name, config) VALUES (?,?,?,?)",
+        (body.match_id, body.timestamp, body.map_name, json.dumps(body.config))
     )
     con.commit()
     con.close()
@@ -99,18 +102,36 @@ def match_end(body: MatchEnd):
     if started and started["started_at"]:
         duration = (body.timestamp - started["started_at"]) // 1000
 
+    # Build SET clause — only overwrite map_name/enemy_style if the userscript
+    # sent non-null values so that a manually-set value is never clobbered.
+    update_fields = [
+        "ended_at=?",
+        "result_head=?",
+        "result_label=?",
+        "result_sub=?",
+        "duration_seconds=?",
+    ]
+    update_values = [
+        body.timestamp,
+        result.get("head"),
+        result.get("label"),
+        result.get("sub"),
+        duration,
+    ]
+
+    if body.map_name is not None:
+        update_fields.append("map_name=?")
+        update_values.append(body.map_name)
+
+    if body.enemy_style is not None:
+        update_fields.append("enemy_style=?")
+        update_values.append(body.enemy_style)
+
+    update_values.append(body.match_id)
+
     con.execute(
-        """UPDATE matches
-           SET ended_at=?, result_head=?, result_label=?, result_sub=?, duration_seconds=?
-           WHERE id=?""",
-        (
-            body.timestamp,
-            result.get("head"),
-            result.get("label"),
-            result.get("sub"),
-            duration,
-            body.match_id,
-        )
+        f"UPDATE matches SET {', '.join(update_fields)} WHERE id=?",
+        update_values,
     )
     for ev in body.events:
         con.execute(
